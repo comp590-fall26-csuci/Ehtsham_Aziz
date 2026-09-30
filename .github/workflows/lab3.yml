@@ -1,0 +1,33 @@
+name: Lab3 Build and Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Lab3
+        working-directory: ./lab3
+        run: make
+
+      - name: Run Lab3 program
+        working-directory: ./lab3
+        run: ./main
+
+      - name: Verify output
+        working-directory: ./lab3
+        run: |
+          OUTPUT=$(./fibonacci)
+
+          echo "$OUTPUT" | grep -Fx "55"
+          echo "$OUTPUT" | grep -Fx "1.618034"
