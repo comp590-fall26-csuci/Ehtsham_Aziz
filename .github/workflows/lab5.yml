@@ -22,6 +22,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y afl++
 
+      - name: Configure crash handling for AFL++
+        run: |
+          echo core | sudo tee /proc/sys/kernel/core_pattern
+
       - name: Compile dvcp.c with AFL++
         run: |
           afl-clang-fast Lab5/dvcp.c -o dvcp
@@ -35,5 +39,13 @@ jobs:
         env:
           AFL_SKIP_CPUFREQ: "1"
         run: |
-          timeout --signal=INT --kill-after=10s 180s \
+          timeout --signal=INT --kill-after=10s 200s \
             afl-fuzz -V 180 -G 64 -i seeds -o findings -- ./dvcp @@
+
+      - name: Upload fuzzing findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: afl-findings
+          path: findings/
+          if-no-files-found: ignore
