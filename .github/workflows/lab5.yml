@@ -1,0 +1,39 @@
+name: AFL++ Fuzz Testing
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  afl-fuzz:
+    name: Fuzz Lab5/dvcp.c for 3 Minutes
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 6
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install AFL++
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y afl++
+
+      - name: Compile dvcp.c with AFL++
+        run: |
+          afl-clang-fast Lab5/dvcp.c -o dvcp
+
+      - name: Prepare seed input
+        run: |
+          mkdir -p seeds
+          printf 'A' > seeds/seed
+
+      - name: Run AFL++ for 3 minutes
+        env:
+          AFL_SKIP_CPUFREQ: "1"
+        run: |
+          timeout --signal=INT --kill-after=10s 180s \
+            afl-fuzz -V 180 -G 64 -i seeds -o findings -- ./dvcp @@
