@@ -42,10 +42,17 @@ jobs:
           timeout --signal=INT --kill-after=10s 200s \
             afl-fuzz -V 180 -G 64 -i seeds -o findings -- ./dvcp @@
 
+      - name: Archive fuzzing findings
+        if: always()
+        run: |
+          if [ -d findings ]; then
+            tar -czf afl-findings.tar.gz findings/
+          fi
+
       - name: Upload fuzzing findings
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: afl-findings
-          path: findings/
+          path: afl-findings.tar.gz
           if-no-files-found: ignore
