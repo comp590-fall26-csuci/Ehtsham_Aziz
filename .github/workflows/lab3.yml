@@ -1,4 +1,4 @@
-name: Lab3 Build and Test
+name: Lab5 Build, Test and Security Scan
 
 on:
   push:
@@ -11,6 +11,7 @@ on:
 
 jobs:
   build:
+    name: Lab4 Unit Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -19,20 +20,24 @@ jobs:
 
       - name: Build Lab4
         working-directory: ./Lab4
-        run: make
-
-      - name: Run Lab4 program
-        working-directory: ./Lab4
-        run: ./fibonacci
-
-      - name: Verify output
-        working-directory: ./Lab4
         run: |
-          OUTPUT=$(./fibonacci)
+          make clean
+          make
 
-          echo "$OUTPUT"
+      - name: Run unit tests
+        working-directory: ./Lab4
+        run: make test
 
-          echo "$OUTPUT" | grep -F "55"
-          echo "$OUTPUT" | grep -F "1.618034"
+  semgrep:
+    name: Semgrep Security Scan
+    runs-on: ubuntu-latest
 
-          
+    container:
+      image: semgrep/semgrep
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        run: semgrep scan --config=auto
