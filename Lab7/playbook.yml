@@ -1,0 +1,407 @@
+- name: Lab7 - Install Gitea and Gitea Runner on Debian
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+    gitea_version: '28.3.0'
+    runner_version: '5.4.1'
+    gitea_url: 'https://127.0.0.1:3000'
+
+  tasks:
+    - name: Verify debian ARM64 system
+      ansible.builtin.shell: |
+        set -eu
+        . /etc/os-release
+
+        if [ "$ID" != "debian" ]; then
+          echo "ERROR: Debian is required"
+          exit 1
+        fi
+
+        if [ "$(uname -m)" != "aarch64" ]; then
+          echo "ERROR: ARM64 architecture is required"
+          exit 1
+        fi
+
+        echo "SUCCESS: Debian ARM64 verified"
+        
+      changed_when: false
+
+    - name: Install dependencies for Gitea and Fibonacci jobs
+      ansible.builtin.apt:
+        name:
+          - git
+          - sqlite3
+          - curl
+          - ca-certificates
+          - openssl
+          - build-essential
+        update_cache: true
+        state: present
+
+    - name: Create git service user
+      ansible.builtin.user:
+        name: git
+        system: true
+        home: /home/git
+        shell: /bin/bash
+        create_home: true
+
+    - name: Create runner service user
+      ansible.builtin.user:
+        name: gitea-runner
+        system: true
+        home: /var/lib/gitea-runner
+        shell: /usr/sbin/nologin
+        create_home: true
+
+    - name: Create Gitea Data Directories
+      ansible.builtin.file:
+        path: "{{item }}"
+        state: directory
+        owner: git
+        group: git
+        mode: '0750'
+
+      loop:
+        - /var/lib/gitea
+        - /var/lib/gitea/custom
+        - /var/lib/gitea/data
+        - /var/lib/gitea/data/gitea-repositories
+        - /var/lib/gitea/log
+
+    - name: Create Gitea Configuration directory
+      ansible.builtin.file:
+        path: /etc/gitea
+        state: directory
+        owner: root
+        group: git
+        mode: '0750'
+
+    - name: Create Runner Directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: gitea-runner
+        group: gitea-runner
+        mode: '0750'
+      loop:
+        - /var/lib/gitea-runner
+        - /var/lib/gitea-runner/work
+
+    - name: Create runner configuration Directory
+      ansible.builtin.file:
+        path: /etc/gitea-runner
+        state: directory
+        owner: root
+        group: gitea-runner
+        mode: '0750'
+
+  # Install gitea and runner binaries
+
+    - name: Download Verified Gitea Binary
+      ansible.builtin.get_url:
+        url: "https://dl.gitea.com/gitea/28.3.0/gitea-28.3.0-linux-arm64"
+        checksum: "sha256:https://dl.gitea.com/gitea/28.3.0/gitea-28.3.0-linux-arm64.sha256"
+        dest: /usr/local/bin/gitea
+        owner: root
+        group: root
+        mode: '0755'
+      register: gitea_binary
+
+    - name: Download verified runner Binary
+      ansible.builtin.get_url:
+        url: "https://dl.gitea.com/gitea-runner/5.4.1/gitea-runner-5.4.1-linux-arm64"
+        checksum: "sha256:https://dl.gitea.com/gitea-runner/5.4.1/gitea-runner-5.4.1-linux-arm64.sha256"
+        dest: /usr/local/bin/gitea-runner
+        owner: root
+        group: root
+        mode: '0755'
+      register: runner_binary
+
+# Generate presistent gitea secrets
+
+    - name: Generate Gitea secrets once
+      ansible.builtin.shell: |
+        umask 077
+        openssl rand -hex 32 > /etc/gitea/{{ item }}
+      args:
+        creates: "/etc/gitea/{{ item }}"
+      loop:
+        - .secret_key
+        - .internal_token
+      no_log: true
+    
+    - name: Generate OAuth2 JWT secret once
+      ansible.builtin.shell: |
+        umask 077
+        /usr/local/bin/gitea generate secret JWT_SECRET > /etc/gitea/.oauth2_jwt_secret
+      args:
+        creates: /etc/gitea/.oauth2_jwt_secret
+      no_log: true
+
+    - name: Read presisten Gitea secrets
+      ansible.builtin.slurp:
+        src: "/etc/gitea/{{ item }}"
+      loop:
+        - .secret_key
+        - .internal_token
+        - .oauth2_jwt_secret
+      register: gitea_secrets
+      no_log: true
+
+# Configure Gitea sqlite and actions
+
+    - name: Configure Gitea SQLite and Actions
+      ansible.builtin.copy:
+        dest: /etc/gitea/app.ini
+        owner: root
+        group: git
+        mode: '0640'
+        content: |
+          APP_NAME = Lab 7 Gitea
+          RUN_USER = git
+          RUN_MODE = prod
+        
+          [database]
+          DB_TYPE = sqlite3
+          PATH = /var/lib/gitea/data/gitea.db
+
+          [repository]
+          ROOT = /var/lib/gitea/data/gitea-repositories
+  
+          [server]
+          DOMAIN = 127.0.0.1
+          HTTP_ADDR = 127.0.0.1
+          HTTP_PORT = 3000
+          ROOT_URL = {{ gitea_url }}/
+          DISABLE_SSH = true
+  
+          [service]
+          DISABLE_REGISTRATION = false
+   
+          [security]
+          INSTALL_LOCK = true
+          SECRET_KEY = {{ gitea_secrets.results[0].content | b64decode | trim }}
+          INTERNAL_TOKEN = {{ gitea_secrets.results[1].content | b64decode | trim }}
+          
+          [oauth2]
+          JWT_SECRET = {{ gitea_secrets.results[2].content | b64decode | trim }}
+
+          [actions]
+          ENABLED = true
+      
+          [log]
+          ROOT_PATH = /var/lib/gitea/log
+      register: gitea_settings
+      no_log: true
+
+# Create Gitea systemd service
+
+    - name: Write Gitea systemd service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/gitea.service
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Gitea Server
+          Wants=network-online.target
+          After=network-online.target
+        
+          [Service]
+          Type=simeple
+          User=git
+          Group=git
+          WorkingDirectory=/var/lib/gitea
+          Environment=USER=git HOME=/home/git GITEA_WORK_DIR=/var/lib/gitea
+          ExecStart=/usr/local/bin/gitea web --config /etc/gitea/app.ini
+          Restart=on-failure
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+      register: gitea_service_file
+
+    - name: Enable and start Gitea
+      ansible.builtin.systemd:
+        name: gitea
+        daemon_reload: true
+        enabled: true
+        state: "{{ 'restarted' if (gitea_binary.changed or gitea_settings.changed or gitea_service_file.changed) else 'started' }}"
+
+    - name: Wait until Gitea responds
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:3000/"
+        method: GET
+        status_code: [200, 301, 302, 303]
+        follow_redirects: none
+        use_proxy: false
+      register: gitea_ready
+      until: gitea_ready is succeeded
+      retries: 30
+      delay: 3
+
+   # Configure Gitea runner without Docker
+
+    - name: Configure Runner for jobs on Debian without Docker
+      ansible.builtin.copy:
+        dest: /etc/gitea-runner/config.yaml
+        owner: root
+        group: gitea-runner
+        mode: '0640'
+        content:  |
+          runner:
+            file: /var/lib/gitea-runner/.runner
+            capacity: 1
+            labels:
+              - 'debian-host:host'
+
+          container:
+            require_docker: false
+
+          cache:
+            enabled: false
+
+          host:
+            workdir_parent: /var/lib/gitea-runner/work
+      register: runner_settings
+
+  # Create Gitea runner systemd service
+
+    - name: Write Gitea Runner Systemd service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/gitea-runner.service
+        owner: root
+        group: root
+        mode: '0644'
+        content: | 
+          [Unit]
+          Description=Gitea Action Runner
+          Wants=network-online.target
+          After=network-online.target gitea.service
+          Requires=gitea.service
+
+          [Service]
+          Type=simple
+          User=gitea-runner
+          Group=gitea-runner
+          WorkingDirectory=/var/lib/gitea-runner
+          Environment=HOME=/var/lib/gitea-runner
+          ExecStart=/usr/local/bin/gitea-runner daemon --config /etc/gitea-runner/config.yaml
+          Restart=on-failure
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+      register: runner_service_file
+
+# Register Runner with Gitea
+
+    - name: Check if runner is already registered
+      ansible.builtin.stat:
+        path: /var/lib/gitea-runner/.runner
+      register: runner_registration
+
+    - name: Generate a Gitea Runner registration token
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/gitea
+          - --config
+          - /etc/gitea/app.ini
+          - actions
+          - generate-runner-token
+      become: true
+      become_user: git
+      environment:
+          HOME: /home/git
+          GITEA_WORK_DIR: /var/lib/gitea
+      register: registration_token
+      changed_when: false
+      no_log: true
+      when: not runner_registration.stat.exists
+
+    - name: Save registraion token privately
+      ansible.builtin.copy:
+        dest: /var/lib/gitea-runner/.registration-token
+        content: "{{ registration_token.stdout | trim }}\n"
+        owner: gitea-runner
+        group: gitea-runner
+        mode: '0600'
+      no_log: true
+      when: not runner_registration.stat.exists
+
+    - name: Register runner with local Gitea
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/gitea-runner
+          - --config
+          - /etc/gitea-runner/config.yaml
+          - register
+          - --no-interactive
+          - --instance
+          - "{{ gitea_url }}"
+          - --token-file
+          - /var/lib/gitea-runner/.registration-token
+          - --name
+          - debian-arm64-runner
+          - --labels
+          - 'debian-hos:host'
+        chdir: /var/lib/gitea-runner
+        creates: /var/lib/gitea-runner/.runner
+      become_user: gitea-runner
+      environment:
+        HOME: /var/lib/gitea-runner
+      no_log: true
+      when: not runner_registration.stat.exists
+
+    - name: Delete temporary registration token
+      ansible.builtin.file:
+        path: /var/lib/gitea-runner/.registration-token
+        state: absent
+      no_log: true
+
+    - name: Secure runner registration file
+      ansible.builtin.file:
+        path: /var/lib/gitea-runner/.runner
+        state: file
+        owner: gitea-runner
+        group: gitea-runner
+        mode: '0600'
+
+#  Enable and start gitea runner
+
+    - name: Enable and start Gitea Runner
+      ansible.builtin.systemd:
+        name: gitea-runner
+        daemon_reload: true
+        enabled: true
+        state: "{{ 'restarted' if (runner_binary.changed or runner_settings.changed or runner_service_file.changed) else 'started' }}"
+
+# Verifying both services
+
+    - name: Confirm services are active
+      ansible.builtin.command: "systemctl is-active {{ item }}"
+      loop:
+        - gitea
+        - gitea-runner
+      changed_when: false
+
+    - name: Confirm services start on boot
+      ansible.builtin.command: "systemctl is-enabled {{ item }}"
+      loop:
+        - gitea
+        - gitea-runner
+      changed_when: false
+
+    - name: Display result
+      ansible.builtin.debug:
+        msg:
+          - 'Gitea: http://127.0.0.1:3000'
+          - 'Runner name: debian-arm64-runner'
+          - 'Runner label: debian-host'
+          - 'Execution mode: host (no Docker)'
+          - 'Both services started and enabled at boot'
+
